@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js'
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY // Should ideally be service role key for API routes, but we can use anon here if RLS policies allow the update
+  process.env.SUPABASE_SERVICE_ROLE_KEY
 )
 
 export default async function handler(req, res) {
@@ -18,7 +18,7 @@ export default async function handler(req, res) {
     // 1. Get the visit and the host's location
     const { data: visit, error: visitError } = await supabaseAdmin
       .from('visits')
-      .select('*, host_family:families!host_family_id(lat, lng)')
+      .select('*, host_family:families!visits_host_family_id_fkey(lat, lng)')
       .eq('id', visitId)
       .single()
 
@@ -56,6 +56,7 @@ export default async function handler(req, res) {
       })
       .eq('id', visitId)
       .select()
+      .single()
 
     if (updateError) throw new Error(updateError.message)
 
