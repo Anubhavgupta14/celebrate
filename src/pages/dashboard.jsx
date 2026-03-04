@@ -7,7 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter }
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { toast } from 'sonner'
-import { Plus, CalendarDays, ArrowRight, Sparkles, X } from 'lucide-react'
+import { Plus, CalendarDays, ArrowRight, Sparkles, X, Pencil, Trash2, Check } from 'lucide-react'
 import Link from 'next/link'
 
 export default function Dashboard() {
@@ -20,6 +20,15 @@ export default function Dashboard() {
     const [tripDate, setTripDate] = useState('')
     const [festivalName, setFestivalName] = useState('')
     const [creating, setCreating] = useState(false)
+
+    // Edit trip state
+    const [editingTripId, setEditingTripId] = useState(null)
+    const [editTripDate, setEditTripDate] = useState('')
+    const [editFestivalName, setEditFestivalName] = useState('')
+    const [saving, setSaving] = useState(false)
+
+    // Delete trip state
+    const [deletingTripId, setDeletingTripId] = useState(null)
 
     useEffect(() => {
         async function fetchData() {
@@ -73,6 +82,46 @@ export default function Dashboard() {
             setFestivalName('')
         }
         setCreating(false)
+    }
+
+    const startEditingTrip = (trip) => {
+        setEditingTripId(trip.id)
+        setEditTripDate(trip.date)
+        setEditFestivalName(trip.festival_name)
+    }
+
+    const handleEditTrip = async (tripId) => {
+        setSaving(true)
+        const { data, error } = await supabase
+            .from('trips')
+            .update({ date: editTripDate, festival_name: editFestivalName })
+            .eq('id', tripId)
+            .select()
+            .single()
+
+        if (error) {
+            toast.error('Failed to update trip')
+        } else {
+            toast.success('Trip updated!')
+            setTrips(trips.map(t => t.id === tripId ? data : t))
+            setEditingTripId(null)
+        }
+        setSaving(false)
+    }
+
+    const handleDeleteTrip = async (tripId) => {
+        setDeletingTripId(tripId)
+        // Delete visits first (cascade safety)
+        await supabase.from('visits').delete().eq('trip_id', tripId)
+        const { error } = await supabase.from('trips').delete().eq('id', tripId)
+
+        if (error) {
+            toast.error('Failed to delete trip')
+        } else {
+            toast.success('Trip deleted')
+            setTrips(trips.filter(t => t.id !== tripId))
+        }
+        setDeletingTripId(null)
     }
 
     if (isLoading || !user) return (
@@ -196,25 +245,95 @@ export default function Dashboard() {
                         {/* Accent top bar */}
                         <div className="h-1 w-full bg-gradient-to-r from-indigo-500 via-violet-500 to-indigo-500 opacity-60 group-hover:opacity-100 transition-opacity" />
 
-                        <div className="p-5 flex-1">
-                            <p className="text-xs font-medium text-indigo-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
-                                <CalendarDays className="h-3 w-3" />
-                                {new Date(trip.date).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}
-                            </p>
-                            <h3 className="text-lg font-bold text-zinc-100 leading-tight">{trip.festival_name}</h3>
-                        </div>
+                        {editingTripId === trip.id ? (
+                            /* ── Inline edit form ── */
+                            <div className="p-5 flex-1 flex flex-col gap-3">
+                                <p className="text-xs font-semibold text-indigo-400 uppercase tracking-wider mb-1">Edit Trip</p>
+                                <div className="space-y-1.5">
+                                    <Label className="text-xs text-zinc-400 uppercase tracking-wide font-medium">Festival Name</Label>
+                                    <Input
+                                        value={editFestivalName}
+                                        onChange={(e) => setEditFestivalName(e.target.value)}
+                                        className="bg-white/5 border-white/10 text-zinc-100 h-8 text-sm"
+                                    />
+                                </div>
+                                <div className="space-y-1.5">
+                                    <Label className="text-xs text-zinc-400 uppercase tracking-wide font-medium">Date</Label>
+                                    <Input
+                                        type="date"
+                                        value={editTripDate}
+                                        onChange={(e) => setEditTripDate(e.target.value)}
+                                        className="bg-white/5 border-white/10 text-zinc-100 h-8 text-sm"
+                                    />
+                                </div>
+                                <div className="flex gap-2 mt-1">
+                                    <Button
+                                        size="sm"
+                                        onClick={() => handleEditTrip(trip.id)}
+                                        disabled={saving}
+                                        className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white text-xs h-8"
+                                    >
+                                        {saving ? <span className="h-3.5 w-3.5 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : <><Check className="h-3.5 w-3.5 mr-1" />Save</>}
+                                    </Button>
+                                    <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={() => setEditingTripId(null)}
+                                        className="flex-1 text-zinc-400 hover:text-zinc-200 text-xs h-8 border border-white/[0.06]"
+                                    >
+                                        Cancel
+                                    </Button>
+                                </div>
+                            </div>
+                        ) : (
+                            /* ── Normal card view ── */
+                            <>
+                                <div className="p-5 flex-1">
+                                    <p className="text-xs font-medium text-indigo-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                                        <CalendarDays className="h-3 w-3" />
+                                        {new Date(trip.date).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}
+                                    </p>
+                                    <h3 className="text-lg font-bold text-zinc-100 leading-tight">{trip.festival_name}</h3>
+                                </div>
 
-                        <div className="px-5 pb-5">
-                            <Link href={`/trip/${trip.id}`} className="block">
-                                <Button
-                                    className="w-full bg-zinc-800 hover:bg-indigo-600 text-zinc-300 hover:text-white border border-white/[0.06] hover:border-indigo-500/50 transition-all duration-200"
-                                    variant="ghost"
-                                >
-                                    Manage Visits
-                                    <ArrowRight className="ml-2 h-4 w-4 group-hover:translate-x-1 transition-transform" />
-                                </Button>
-                            </Link>
-                        </div>
+                                <div className="px-5 pb-5 flex flex-col gap-2">
+                                    <Link href={`/trip/${trip.id}`} className="block">
+                                        <Button
+                                            className="w-full bg-zinc-800 hover:bg-indigo-600 text-zinc-300 hover:text-white border border-white/[0.06] hover:border-indigo-500/50 transition-all duration-200"
+                                            variant="ghost"
+                                        >
+                                            Manage Visits
+                                            <ArrowRight className="ml-2 h-4 w-4 group-hover:translate-x-1 transition-transform" />
+                                        </Button>
+                                    </Link>
+
+                                    {/* Edit / Delete row */}
+                                    <div className="flex gap-2">
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            onClick={() => startEditingTrip(trip)}
+                                            className="flex-1 text-xs text-zinc-400 hover:text-indigo-300 hover:bg-indigo-500/10 border border-white/[0.06] hover:border-indigo-500/20 h-8 transition-all"
+                                        >
+                                            <Pencil className="h-3.5 w-3.5 mr-1.5" />
+                                            Edit Trip
+                                        </Button>
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            onClick={() => handleDeleteTrip(trip.id)}
+                                            disabled={deletingTripId === trip.id}
+                                            className="flex-1 text-xs text-zinc-400 hover:text-red-400 hover:bg-red-500/10 border border-white/[0.06] hover:border-red-500/20 h-8 transition-all"
+                                        >
+                                            {deletingTripId === trip.id
+                                                ? <span className="h-3.5 w-3.5 rounded-full border-2 border-red-400/30 border-t-red-400 animate-spin" />
+                                                : <><Trash2 className="h-3.5 w-3.5 mr-1.5" />Delete</>
+                                            }
+                                        </Button>
+                                    </div>
+                                </div>
+                            </>
+                        )}
                     </div>
                 ))}
             </div>
