@@ -52,7 +52,9 @@ export default async function handler(req, res) {
       .from('visits')
       .update({ 
         status: status || 'in_transit',
-        estimated_travel_time_mins: estimatedParamsMins
+        estimated_travel_time_mins: estimatedParamsMins,
+        visitor_lat: lat,
+        visitor_lng: lng
       })
       .eq('id', visitId)
       .select()

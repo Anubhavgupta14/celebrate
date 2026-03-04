@@ -1,15 +1,28 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Layout } from '@/components/Layout'
 import { useAuth } from '@/lib/AuthContext'
 import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
 import { toast } from 'sonner'
 import { MapPin, Clock, Car, CheckCircle2, Navigation, Users } from 'lucide-react'
+import dynamic from 'next/dynamic'
+
+// Dynamically import map to avoid SSR issues with window
+const LiveMap = dynamic(() => import('@/components/LiveMap'), {
+    ssr: false,
+    loading: () => <div className="h-48 w-full bg-zinc-800/50 flex flex-col items-center justify-center text-zinc-500 rounded-xl border border-white/[0.05] animate-pulse"><p className="text-sm">Loading map...</p></div>
+})
 
 export default function HostDashboard() {
     const { user, isLoading: isAuthLoading } = useAuth()
     const [family, setFamily] = useState(null)
     const [expectedVisits, setExpectedVisits] = useState([])
+
+    // Store live locations keyed by visit ID
+    const [liveLocations, setLiveLocations] = useState({})
+
+    // Track active channels to avoid duplicate subscriptions
+    const activeChannelsRef = useRef({})
 
     useEffect(() => {
         async function fetchHostData() {
@@ -40,13 +53,23 @@ export default function HostDashboard() {
 
         if (data) {
             setExpectedVisits(data)
+
+            // Populate initial known locations from DB
+            const initialLocations = {}
+            data.forEach(v => {
+                if (v.visitor_lat && v.visitor_lng) {
+                    initialLocations[v.id] = { lat: v.visitor_lat, lng: v.visitor_lng }
+                }
+            })
+            setLiveLocations(prev => ({ ...prev, ...initialLocations }))
         }
     }
 
+    // Subscribe to DB changes for status updates
     useEffect(() => {
         if (!family) return
 
-        const channel = supabase.channel('host-visits')
+        const channel = supabase.channel('host-visits-db')
             .on(
                 'postgres_changes',
                 {
@@ -90,6 +113,60 @@ export default function HostDashboard() {
             supabase.removeChannel(channel)
         }
     }, [family])
+
+    // Subscribe to broadcast channels for live GPS updates
+    useEffect(() => {
+        if (!family) return
+
+        const inTransitVisits = expectedVisits.filter(v => v.status === 'in_transit')
+
+        inTransitVisits.forEach(visit => {
+            const channelName = `location:visit-${visit.id}`
+
+            // Check if we are already subscribed
+            if (!activeChannelsRef.current[channelName]) {
+                const channel = supabase.channel(channelName)
+                    .on(
+                        'broadcast',
+                        { event: 'location-update' },
+                        (payload) => {
+                            setLiveLocations(prev => ({
+                                ...prev,
+                                [visit.id]: { lat: payload.payload.lat, lng: payload.payload.lng }
+                            }))
+                        }
+                    )
+                    .subscribe()
+
+                activeChannelsRef.current[channelName] = channel
+            }
+        })
+
+        // Cleanup stale channels (e.g., visit became 'arrived')
+        const activeVisitIds = inTransitVisits.map(v => v.id)
+        Object.keys(activeChannelsRef.current).forEach(channelName => {
+            const idMatch = channelName.match(/location:visit-(.+)/)
+            if (idMatch && !activeVisitIds.includes(idMatch[1])) {
+                supabase.removeChannel(activeChannelsRef.current[channelName])
+                delete activeChannelsRef.current[channelName]
+            }
+        })
+
+        return () => {
+            // We don't cleanup all channels on every render, only stale ones above.
+            // Full cleanup happens on unmount.
+        }
+    }, [expectedVisits, family])
+
+    // Full cleanup on unmount
+    useEffect(() => {
+        return () => {
+            Object.values(activeChannelsRef.current).forEach(channel => {
+                supabase.removeChannel(channel)
+            })
+            activeChannelsRef.current = {}
+        }
+    }, [])
 
     if (isAuthLoading || !user) return (
         <div className="flex h-screen items-center justify-center bg-background">
@@ -139,13 +216,14 @@ export default function HostDashboard() {
                             {activeVisits.map((visit) => {
                                 const visitingFamily = visit.trip?.families
                                 const isInTransit = visit.status === 'in_transit'
+                                const visitLocation = liveLocations[visit.id]
 
                                 return (
                                     <div
                                         key={visit.id}
                                         className={`relative rounded-xl overflow-hidden border transition-all ${isInTransit
-                                                ? 'border-indigo-500/40 bg-indigo-500/5 shadow-lg shadow-indigo-500/10'
-                                                : 'border-zinc-700/50 bg-zinc-900/60'
+                                            ? 'border-indigo-500/40 bg-indigo-500/5 shadow-lg shadow-indigo-500/10'
+                                            : 'border-zinc-700/50 bg-zinc-900/60'
                                             }`}
                                     >
                                         {/* In-transit left border glow */}
@@ -174,12 +252,24 @@ export default function HostDashboard() {
                                                 )}
                                             </div>
 
-                                            {isInTransit && visit.estimated_travel_time_mins && (
-                                                <div className="mt-3 px-3 py-2 rounded-lg bg-gradient-to-r from-indigo-600/20 to-violet-600/10 border border-indigo-500/20">
-                                                    <p className="text-sm font-medium text-indigo-300 flex items-center gap-2">
-                                                        <Navigation className="w-3.5 h-3.5 shrink-0" />
-                                                        ETA: ~{visit.estimated_travel_time_mins} mins away
-                                                    </p>
+                                            {isInTransit && (
+                                                <div className="mt-4 space-y-3">
+                                                    {visit.estimated_travel_time_mins != null && (
+                                                        <div className="px-3 py-2 rounded-lg bg-gradient-to-r from-indigo-600/20 to-violet-600/10 border border-indigo-500/20">
+                                                            <p className="text-sm font-medium text-indigo-300 flex items-center gap-2">
+                                                                <Navigation className="w-3.5 h-3.5 shrink-0" />
+                                                                ETA: ~{visit.estimated_travel_time_mins} mins away
+                                                            </p>
+                                                        </div>
+                                                    )}
+
+                                                    {/* Live Map */}
+                                                    <LiveMap
+                                                        hostLat={family.lat}
+                                                        hostLng={family.lng}
+                                                        visitorLat={visitLocation?.lat}
+                                                        visitorLng={visitLocation?.lng}
+                                                    />
                                                 </div>
                                             )}
                                         </div>

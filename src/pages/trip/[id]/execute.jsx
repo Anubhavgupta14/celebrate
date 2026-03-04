@@ -1,13 +1,28 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/router'
 import { Layout } from '@/components/Layout'
 import { useAuth } from '@/lib/AuthContext'
 import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card'
 import { toast } from 'sonner'
 import { MapPin, Navigation, Car, CheckCircle2, Clock, ArrowLeft } from 'lucide-react'
 import Link from 'next/link'
+
+// Haversine formula to get distance in meters
+function getDistanceInMeters(lat1, lon1, lat2, lon2) {
+    if (!lat1 || !lon1 || !lat2 || !lon2) return Infinity;
+    const R = 6371e3; // metres
+    const φ1 = lat1 * Math.PI / 180; // φ, λ in radians
+    const φ2 = lat2 * Math.PI / 180;
+    const Δφ = (lat2 - lat1) * Math.PI / 180;
+    const Δλ = (lon2 - lon1) * Math.PI / 180;
+
+    const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+        Math.cos(φ1) * Math.cos(φ2) *
+        Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c; // in metres
+}
 
 export default function ExecuteTrip() {
     const { user, isLoading: isAuthLoading } = useAuth()
@@ -18,6 +33,11 @@ export default function ExecuteTrip() {
     const [visits, setVisits] = useState([])
     const [loading, setLoading] = useState(false)
     const [currentLocation, setCurrentLocation] = useState(null)
+
+    // Refs for live tracking
+    const watchIdRef = useRef(null)
+    const lastApiUpdateRef = useRef(0)
+    const inTransitVisitRef = useRef(null)
 
     useEffect(() => {
         // Attempt to get location early for faster interactions
@@ -66,12 +86,85 @@ export default function ExecuteTrip() {
     const fetchVisits = async () => {
         const { data, error } = await supabase
             .from('visits')
-            .select('*, host_family:families!host_family_id(name, address)')
+            .select('*, host_family:families!host_family_id(name, address, lat, lng)')
             .eq('trip_id', id)
             .order('sequence_order', { ascending: true })
 
         if (data) setVisits(data)
     }
+
+    // --- Live Tracking & Auto-Arrive Logic ---
+    useEffect(() => {
+        const inTransitVisit = visits.find(v => v.status === 'in_transit')
+        inTransitVisitRef.current = inTransitVisit
+
+        if (inTransitVisit) {
+            // Start watching location
+            if (navigator.geolocation && !watchIdRef.current) {
+                const channel = supabase.channel(`location:visit-${inTransitVisit.id}`)
+
+                watchIdRef.current = navigator.geolocation.watchPosition(
+                    async (position) => {
+                        const { latitude, longitude } = position.coords;
+                        setCurrentLocation({ lat: latitude, lng: longitude });
+
+                        // 1. Broadcast via Realtime
+                        channel.send({
+                            type: 'broadcast',
+                            event: 'location-update',
+                            payload: { lat: latitude, lng: longitude }
+                        });
+
+                        // 2. Check Auto-Arrive (Distance <= 100m)
+                        if (inTransitVisit.host_family?.lat && inTransitVisit.host_family?.lng) {
+                            const distance = getDistanceInMeters(
+                                latitude, longitude,
+                                inTransitVisit.host_family.lat, inTransitVisit.host_family.lng
+                            );
+
+                            if (distance <= 100) {
+                                toast.success('You are within 100m. Automatically marked as arrived!')
+                                handleMarkArrived(inTransitVisit.id)
+                                return; // Stop processing this tick
+                            }
+                        }
+
+                        // 3. Persist to DB & ETA update every 15 seconds
+                        const now = Date.now();
+                        if (now - lastApiUpdateRef.current > 15000) {
+                            lastApiUpdateRef.current = now;
+                            fetch('/api/update-status', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    visitId: inTransitVisit.id,
+                                    lat: latitude,
+                                    lng: longitude,
+                                    status: 'in_transit'
+                                })
+                            }).catch(console.error);
+                        }
+                    },
+                    (error) => console.error('Watch position error:', error),
+                    { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
+                )
+            }
+        } else {
+            // Stop watching if no visit is in transit
+            if (watchIdRef.current) {
+                navigator.geolocation.clearWatch(watchIdRef.current)
+                watchIdRef.current = null
+            }
+        }
+
+        return () => {
+            if (watchIdRef.current) {
+                navigator.geolocation.clearWatch(watchIdRef.current)
+                watchIdRef.current = null
+            }
+        }
+    }, [visits])
+
 
     const handleLeaveNow = async (visitId) => {
         setLoading(true)
@@ -124,7 +217,7 @@ export default function ExecuteTrip() {
         if (error) {
             toast.error('Failed to mark as arrived')
         } else {
-            toast.success('Welcome! You have arrived.')
+            // Already handled by component UI refresh
             fetchVisits()
         }
         setLoading(false)
