@@ -18,8 +18,7 @@ export default function TripDetails() {
 
     const [trip, setTrip] = useState(null)
     const [visits, setVisits] = useState([])
-    const [searchQuery, setSearchQuery] = useState('')
-    const [searchResults, setSearchResults] = useState([])
+    const [allFamilies, setAllFamilies] = useState([])
 
     // Modals / forms
     const [selectedFamily, setSelectedFamily] = useState(null)
@@ -42,7 +41,20 @@ export default function TripDetails() {
             }
         }
 
-        if (!isLoading && id) fetchTripDetails()
+        async function fetchAllFamilies() {
+            if (!user) return
+            const { data } = await supabase
+                .from('families')
+                .select('id, name, address')
+                .neq('auth_id', user.id)
+                .order('name', { ascending: true })
+            if (data) setAllFamilies(data)
+        }
+
+        if (!isLoading && id) {
+            fetchTripDetails()
+            fetchAllFamilies()
+        }
     }, [user, isLoading, id])
 
     const fetchVisits = async () => {
@@ -55,21 +67,7 @@ export default function TripDetails() {
         if (data) setVisits(data)
     }
 
-    const handleSearch = async (e) => {
-        e.preventDefault()
-        if (!searchQuery.trim()) return
-        setLoading(true)
-
-        const { data } = await supabase
-            .from('families')
-            .select('id, name, address')
-            .ilike('name', `%${searchQuery}%`)
-            .neq('auth_id', user.id)
-            .limit(10)
-
-        if (data) setSearchResults(data)
-        setLoading(false)
-    }
+    // Search feature removed
 
     const handleAddVisit = async (e) => {
         e.preventDefault()
@@ -94,8 +92,6 @@ export default function TripDetails() {
             toast.success('Visit added!')
             setSelectedFamily(null)
             setPlannedTime('')
-            setSearchResults([])
-            setSearchQuery('')
             fetchVisits()
         }
         setLoading(false)
@@ -191,34 +187,14 @@ export default function TripDetails() {
                     <div className="sticky top-20 rounded-2xl border border-indigo-500/20 bg-zinc-900/60 overflow-hidden">
                         <div className="p-5 border-b border-white/[0.06]">
                             <h2 className="font-semibold text-zinc-100">Add a Stop</h2>
-                            <p className="text-xs text-zinc-400 mt-0.5">Search for registered families to add to your trip.</p>
+                            <p className="text-xs text-zinc-400 mt-0.5">Select a family from the list to add to your trip.</p>
                         </div>
                         <div className="p-5">
                             {!selectedFamily ? (
                                 <div className="space-y-4">
-                                    <form onSubmit={handleSearch} className="flex gap-2">
-                                        <Input
-                                            placeholder="Search family name..."
-                                            value={searchQuery}
-                                            onChange={(e) => setSearchQuery(e.target.value)}
-                                            className="bg-white/5 border-white/10 text-zinc-100 placeholder:text-zinc-600"
-                                        />
-                                        <Button
-                                            type="submit"
-                                            size="icon"
-                                            disabled={loading}
-                                            className="bg-indigo-600 hover:bg-indigo-500 text-white shrink-0"
-                                        >
-                                            {loading
-                                                ? <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                                                : <Search className="h-4 w-4" />
-                                            }
-                                        </Button>
-                                    </form>
-
-                                    {searchResults.length > 0 && (
-                                        <div className="space-y-2 max-h-[300px] overflow-y-auto animate-fade-in-up">
-                                            {searchResults.map(fam => (
+                                    {allFamilies.length > 0 ? (
+                                        <div className="space-y-2 max-h-[400px] overflow-y-auto animate-fade-in-up pr-2">
+                                            {allFamilies.map(fam => (
                                                 <button
                                                     key={fam.id}
                                                     onClick={() => setSelectedFamily(fam)}
@@ -229,9 +205,8 @@ export default function TripDetails() {
                                                 </button>
                                             ))}
                                         </div>
-                                    )}
-                                    {searchResults.length === 0 && searchQuery && !loading && (
-                                        <p className="text-sm text-zinc-500 text-center py-4">No families found.</p>
+                                    ) : (
+                                        <p className="text-sm text-zinc-500 text-center py-4">No families available.</p>
                                     )}
                                 </div>
                             ) : (
